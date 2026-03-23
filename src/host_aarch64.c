@@ -5,7 +5,7 @@
 #include "target_tables_aarch64.h"
 #include "target_parsing.h"
 
-#include <cstring>
+#include <string.h>
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
@@ -13,7 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <fstream>
+#include <stdio.h>
 #endif
 
 // ============================================================================
@@ -38,11 +38,9 @@
 #define CPUFAMILY_ARM_THERA              0xab345f09 // A19 Pro
 #define CPUFAMILY_ARM_TILOS              0x01d7a72b // A19
 
-namespace tp {
-
-const std::string &get_host_cpu_name() {
-    static std::string cpu_name;
-    if (!cpu_name.empty()) return cpu_name;
+const char *tp_get_host_cpu_name(void) {
+    static const char *cpu_name = NULL;
+    if (cpu_name) return cpu_name;
 
     uint32_t family = 0;
     size_t len = sizeof(family);
@@ -73,15 +71,15 @@ const std::string &get_host_cpu_name() {
     // If not, try progressively older CPUs as fallback.
     name = resolve_cpu_alias(name);
     if (!_find_cpu_exact(name)) {
-        // Fallback chain for CPUs not yet in the tables
         static const struct { const char *from; const char *fallback; } fallbacks[] = {
             {"apple-m5", "apple-m4"},
             {"apple-m4", "apple-a17"},
             {"apple-a17", "apple-a16"},
-            {nullptr, nullptr}
+            {NULL, NULL}
         };
-        for (auto *f = fallbacks; f->from; f++) {
-            if (std::strcmp(name, f->from) == 0) {
+        const struct { const char *from; const char *fallback; } *f;
+        for (f = fallbacks; f->from; f++) {
+            if (strcmp(name, f->from) == 0) {
                 const char *resolved = resolve_cpu_alias(f->fallback);
                 if (_find_cpu_exact(resolved)) { name = resolved; break; }
             }
@@ -94,18 +92,17 @@ const std::string &get_host_cpu_name() {
     return cpu_name;
 }
 
-FeatureBits get_host_features() {
-    FeatureBits features{};
+FeatureBits tp_get_host_features(void) {
+    FeatureBits features;
+    memset(&features, 0, sizeof(features));
 
-    const auto &cpu = get_host_cpu_name();
-    const CPUEntry *entry = _find_cpu_exact(cpu.c_str());
+    const char *cpu = tp_get_host_cpu_name();
+    const CPUEntry *entry = _find_cpu_exact(cpu);
     if (entry)
         features = entry->features;
 
     return features;
 }
-
-} // namespace tp
 
 // ============================================================================
 // Windows AArch64: CPU detection
@@ -113,15 +110,13 @@ FeatureBits get_host_features() {
 
 #elif defined(_WIN32)
 
-namespace tp {
-
-const std::string &get_host_cpu_name() {
-    static std::string cpu_name = "generic";
-    return cpu_name;
+const char *tp_get_host_cpu_name(void) {
+    return "generic";
 }
 
-FeatureBits get_host_features() {
-    FeatureBits features{};
+FeatureBits tp_get_host_features(void) {
+    FeatureBits features;
+    memset(&features, 0, sizeof(features));
 
     const FeatureEntry *fe;
 
@@ -161,19 +156,17 @@ FeatureBits get_host_features() {
     return features;
 }
 
-} // namespace tp
-
 // ============================================================================
 // Linux AArch64: CPU detection via /proc/cpuinfo
 // ============================================================================
 
 #else // Linux
 
-struct ArmCPUInfo {
+typedef struct {
     unsigned implementer;
     unsigned part;
     const char *name;
-};
+} ArmCPUInfo;
 
 static const ArmCPUInfo arm_cpus[] = {
     // ARM Ltd. (0x41)
@@ -220,12 +213,12 @@ static const ArmCPUInfo arm_cpus[] = {
     {0x4e, 0x004, "carmel"},
     // Qualcomm (0x51)
     {0x51, 0x001, "oryon-1"},
-    {0x51, 0x800, "cortex-a73"},  // Kryo 2xx Gold
-    {0x51, 0x801, "cortex-a73"},  // Kryo 2xx Silver
-    {0x51, 0x802, "cortex-a75"},  // Kryo 3xx Gold
-    {0x51, 0x803, "cortex-a75"},  // Kryo 3xx Silver
-    {0x51, 0x804, "cortex-a76"},  // Kryo 4xx Gold
-    {0x51, 0x805, "cortex-a76"},  // Kryo 4xx/5xx Silver
+    {0x51, 0x800, "cortex-a73"},
+    {0x51, 0x801, "cortex-a73"},
+    {0x51, 0x802, "cortex-a75"},
+    {0x51, 0x803, "cortex-a75"},
+    {0x51, 0x804, "cortex-a76"},
+    {0x51, 0x805, "cortex-a76"},
     {0x51, 0xc00, "falkor"},
     {0x51, 0xc01, "saphira"},
     // Apple (0x61, on Linux/Asahi)
@@ -248,128 +241,150 @@ static const ArmCPUInfo arm_cpus[] = {
     {0x61, 0x048, "apple-m3"},
     {0x61, 0x049, "apple-m3"},
     // Microsoft (0x6d)
-    {0x6d, 0xd49, "neoverse-n2"},  // Azure Cobalt 100
+    {0x6d, 0xd49, "neoverse-n2"},
     // Ampere (0xc0)
     {0xc0, 0xac3, "ampere1"},
     {0xc0, 0xac4, "ampere1a"},
     {0xc0, 0xac5, "ampere1b"},
-    {0, 0, nullptr}
+    {0, 0, NULL}
 };
 
-static const std::string &load_cpuinfo() {
-    static std::string content;
-    static bool loaded = false;
+/* Load /proc/cpuinfo into a static buffer. Returns pointer to content. */
+static const char *load_cpuinfo(size_t *out_len) {
+    static char *content = NULL;
+    static size_t content_len = 0;
+    static int loaded = 0;
     if (!loaded) {
-        loaded = true;
-        std::ifstream f("/proc/cpuinfo");
+        loaded = 1;
+        FILE *f = fopen("/proc/cpuinfo", "r");
         if (f) {
-            content.assign(std::istreambuf_iterator<char>(f),
-                           std::istreambuf_iterator<char>());
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0) {
+                content = (char *)malloc((size_t)sz + 1);
+                content_len = fread(content, 1, (size_t)sz, f);
+                content[content_len] = '\0';
+            }
+            fclose(f);
         }
     }
-    return content;
+    if (out_len) *out_len = content_len;
+    return content ? content : "";
 }
 
-static std::string_view cpuinfo_field(std::string_view buf, std::string_view field) {
+/* Find the first occurrence of a cpuinfo field, return its value as a view */
+static tp_sv cpuinfo_field(tp_sv buf, const char *field) {
+    tp_sv empty = {NULL, 0};
+    size_t field_len = strlen(field);
     size_t pos = 0;
-    while (pos < buf.size()) {
-        auto found = buf.find(field, pos);
-        if (found == std::string_view::npos) break;
+    while (pos < buf.len) {
+        const char *found = (const char *)memmem(buf.data + pos, buf.len - pos, field, field_len);
+        if (!found) break;
+        size_t fpos = (size_t)(found - buf.data);
 
-        if (found > 0 && buf[found - 1] != '\n') {
-            pos = found + 1;
+        if (fpos > 0 && buf.data[fpos - 1] != '\n') {
+            pos = fpos + 1;
             continue;
         }
 
-        auto after = found + field.size();
-        while (after < buf.size() && (buf[after] == ' ' || buf[after] == '\t'))
+        size_t after = fpos + field_len;
+        while (after < buf.len && (buf.data[after] == ' ' || buf.data[after] == '\t'))
             after++;
-        if (after >= buf.size() || buf[after] != ':') {
-            pos = found + 1;
+        if (after >= buf.len || buf.data[after] != ':') {
+            pos = fpos + 1;
             continue;
         }
         after++;
-        while (after < buf.size() && (buf[after] == ' ' || buf[after] == '\t'))
+        while (after < buf.len && (buf.data[after] == ' ' || buf.data[after] == '\t'))
             after++;
 
-        auto eol = buf.find('\n', after);
-        if (eol == std::string_view::npos) eol = buf.size();
-        return buf.substr(after, eol - after);
+        const char *eol = (const char *)memchr(buf.data + after, '\n', buf.len - after);
+        size_t end = eol ? (size_t)(eol - buf.data) : buf.len;
+        tp_sv result;
+        result.data = buf.data + after;
+        result.len = end - after;
+        return result;
     }
-    return {};
+    return empty;
 }
 
-// Collect all distinct values of a cpuinfo field (one per core)
-static std::vector<std::string_view> cpuinfo_field_all(std::string_view buf, std::string_view field) {
-    std::vector<std::string_view> result;
+/* Collect all distinct values of a cpuinfo field. Returns tp_vec of tp_sv. */
+static tp_vec cpuinfo_field_all(tp_sv buf, const char *field) {
+    tp_vec result = tp_vec_new(sizeof(tp_sv));
+    size_t field_len = strlen(field);
     size_t pos = 0;
-    while (pos < buf.size()) {
-        auto found = buf.find(field, pos);
-        if (found == std::string_view::npos) break;
+    while (pos < buf.len) {
+        const char *found = (const char *)memmem(buf.data + pos, buf.len - pos, field, field_len);
+        if (!found) break;
+        size_t fpos = (size_t)(found - buf.data);
 
-        if (found > 0 && buf[found - 1] != '\n') {
-            pos = found + 1;
+        if (fpos > 0 && buf.data[fpos - 1] != '\n') {
+            pos = fpos + 1;
             continue;
         }
 
-        auto after = found + field.size();
-        while (after < buf.size() && (buf[after] == ' ' || buf[after] == '\t'))
+        size_t after = fpos + field_len;
+        while (after < buf.len && (buf.data[after] == ' ' || buf.data[after] == '\t'))
             after++;
-        if (after >= buf.size() || buf[after] != ':') {
-            pos = found + 1;
+        if (after >= buf.len || buf.data[after] != ':') {
+            pos = fpos + 1;
             continue;
         }
         after++;
-        while (after < buf.size() && (buf[after] == ' ' || buf[after] == '\t'))
+        while (after < buf.len && (buf.data[after] == ' ' || buf.data[after] == '\t'))
             after++;
 
-        auto eol = buf.find('\n', after);
-        if (eol == std::string_view::npos) eol = buf.size();
-        auto val = buf.substr(after, eol - after);
+        const char *eol = (const char *)memchr(buf.data + after, '\n', buf.len - after);
+        size_t end = eol ? (size_t)(eol - buf.data) : buf.len;
+        tp_sv val;
+        val.data = buf.data + after;
+        val.len = end - after;
 
         // Add if not already present
-        bool dup = false;
-        for (auto &v : result) if (v == val) { dup = true; break; }
-        if (!dup) result.push_back(val);
+        int dup = 0;
+        size_t ri;
+        for (ri = 0; ri < result.count; ri++) {
+            tp_sv *existing = (tp_sv *)tp_vec_at(&result, ri);
+            if (existing->len == val.len && memcmp(existing->data, val.data, val.len) == 0) {
+                dup = 1; break;
+            }
+        }
+        if (!dup) tp_vec_push(&result, &val);
 
-        pos = eol + 1;
+        pos = end + 1;
     }
     return result;
 }
 
 // Known big.LITTLE pairs: {big_part, little_part, result_name}
-struct BigLittlePair {
+typedef struct {
     unsigned big_part;
     unsigned little_part;
     const char *name;
-};
+} BigLittlePair;
 
-// Known big.LITTLE / DynamIQ pairings.
-// First entry (from LLVM Host.cpp), rest from ARM product documentation.
-// When both cores are present, report the big core.
 static const BigLittlePair big_little_pairs[] = {
-    // LLVM Host.cpp
-    {0xd85, 0xd87, "cortex-x925"},  // X925 + A725
-    // ARM DynamIQ pairings
-    {0xd82, 0xd80, "cortex-x4"},    // X4 + A520
-    {0xd81, 0xd80, "cortex-a720"},  // A720 + A520
-    {0xd4e, 0xd46, "cortex-x3"},    // X3 + A510
-    {0xd4d, 0xd46, "cortex-a715"},  // A715 + A510
-    {0xd48, 0xd46, "cortex-x2"},    // X2 + A510
-    {0xd47, 0xd46, "cortex-a710"},  // A710 + A510
-    {0xd44, 0xd41, "cortex-x1"},    // X1 + A78
-    {0xd41, 0xd05, "cortex-a78"},   // A78 + A55
-    {0xd0b, 0xd05, "cortex-a76"},   // A76 + A55
-    {0xd0a, 0xd05, "cortex-a75"},   // A75 + A55
-    {0xd08, 0xd03, "cortex-a72"},   // A72 + A53
-    {0xd07, 0xd03, "cortex-a57"},   // A57 + A53
-    {0, 0, nullptr}
+    {0xd85, 0xd87, "cortex-x925"},
+    {0xd82, 0xd80, "cortex-x4"},
+    {0xd81, 0xd80, "cortex-a720"},
+    {0xd4e, 0xd46, "cortex-x3"},
+    {0xd4d, 0xd46, "cortex-a715"},
+    {0xd48, 0xd46, "cortex-x2"},
+    {0xd47, 0xd46, "cortex-a710"},
+    {0xd44, 0xd41, "cortex-x1"},
+    {0xd41, 0xd05, "cortex-a78"},
+    {0xd0b, 0xd05, "cortex-a76"},
+    {0xd0a, 0xd05, "cortex-a75"},
+    {0xd08, 0xd03, "cortex-a72"},
+    {0xd07, 0xd03, "cortex-a57"},
+    {0, 0, NULL}
 };
 
-struct FeatureMap {
+typedef struct {
     const char *linux_name;
     const char *llvm_name;
-};
+} FeatureMap;
 
 static const FeatureMap aarch64_feature_map[] = {
     {"asimd", "neon"},
@@ -395,50 +410,61 @@ static const FeatureMap aarch64_feature_map[] = {
     {"dit", "dit"},
     {"bti", "bti"},
     {"paca", "pauth"},
-    {nullptr, nullptr}
+    {NULL, NULL}
 };
 
-namespace tp {
+const char *tp_get_host_cpu_name(void) {
+    static const char *cpu_name = NULL;
+    if (cpu_name) return cpu_name;
 
-const std::string &get_host_cpu_name() {
-    static std::string cpu_name;
-    if (!cpu_name.empty()) return cpu_name;
-
-    const auto &info = load_cpuinfo();
+    size_t info_len;
+    const char *info_data = load_cpuinfo(&info_len);
+    tp_sv info;
+    info.data = info_data;
+    info.len = info_len;
 
     // Collect all distinct (implementer, part) pairs from all cores.
-    // On big.LITTLE systems, different cores report different parts.
-    auto impl_all = cpuinfo_field_all(info, "CPU implementer");
-    auto part_all = cpuinfo_field_all(info, "CPU part");
+    tp_vec impl_all = cpuinfo_field_all(info, "CPU implementer");
+    tp_vec part_all = cpuinfo_field_all(info, "CPU part");
 
-    struct CoreInfo { unsigned impl; unsigned part; };
-    std::vector<CoreInfo> cores;
-    // Pair up: typically each core block has one implementer + one part,
-    // but we collect all distinct parts we see.
+    typedef struct { unsigned impl; unsigned part; } CoreInfo;
+    tp_vec cores = tp_vec_new(sizeof(CoreInfo));
+
     unsigned default_impl = 0x41; // ARM Ltd.
-    if (!impl_all.empty())
-        default_impl = static_cast<unsigned>(std::strtoul(
-            std::string(impl_all[0]).c_str(), nullptr, 0));
+    if (impl_all.count > 0) {
+        tp_sv *sv = (tp_sv *)tp_vec_at(&impl_all, 0);
+        tp_str tmp = tp_str_from_n(sv->data, sv->len);
+        default_impl = (unsigned)strtoul(tp_str_cstr(&tmp), NULL, 0);
+        tp_str_free(&tmp);
+    }
 
-    for (auto &p : part_all) {
-        unsigned part = static_cast<unsigned>(std::strtoul(
-            std::string(p).c_str(), nullptr, 0));
-        cores.push_back({default_impl, part});
+    size_t pi;
+    for (pi = 0; pi < part_all.count; pi++) {
+        tp_sv *p = (tp_sv *)tp_vec_at(&part_all, pi);
+        tp_str tmp = tp_str_from_n(p->data, p->len);
+        unsigned part = (unsigned)strtoul(tp_str_cstr(&tmp), NULL, 0);
+        tp_str_free(&tmp);
+        CoreInfo ci;
+        ci.impl = default_impl;
+        ci.part = part;
+        tp_vec_push(&cores, &ci);
     }
 
     const char *name = "generic";
 
     // Check for known big.LITTLE pairs first
-    if (cores.size() >= 2) {
-        for (const auto &bl : big_little_pairs) {
-            if (!bl.name) break;
-            bool has_big = false, has_little = false;
-            for (const auto &c : cores) {
-                if (c.part == bl.big_part) has_big = true;
-                if (c.part == bl.little_part) has_little = true;
+    if (cores.count >= 2) {
+        const BigLittlePair *bl;
+        for (bl = big_little_pairs; bl->name; bl++) {
+            int has_big = 0, has_little = 0;
+            size_t ci;
+            for (ci = 0; ci < cores.count; ci++) {
+                CoreInfo *c = (CoreInfo *)tp_vec_at(&cores, ci);
+                if (c->part == bl->big_part) has_big = 1;
+                if (c->part == bl->little_part) has_little = 1;
             }
             if (has_big && has_little) {
-                name = bl.name;
+                name = bl->name;
                 break;
             }
         }
@@ -446,11 +472,14 @@ const std::string &get_host_cpu_name() {
 
     // If no big.LITTLE match, look up all cores and pick the one with the
     // most features (i.e. the "big" core on an unknown big.LITTLE system).
-    if (std::strcmp(name, "generic") == 0 && !cores.empty()) {
+    if (strcmp(name, "generic") == 0 && cores.count > 0) {
         unsigned best_popcount = 0;
-        for (const auto &c : cores) {
-            for (const ArmCPUInfo *entry = arm_cpus; entry->name; entry++) {
-                if (entry->implementer == c.impl && entry->part == c.part) {
+        size_t ci;
+        for (ci = 0; ci < cores.count; ci++) {
+            CoreInfo *c = (CoreInfo *)tp_vec_at(&cores, ci);
+            const ArmCPUInfo *entry;
+            for (entry = arm_cpus; entry->name; entry++) {
+                if (entry->implementer == c->impl && entry->part == c->part) {
                     const CPUEntry *cpu = find_cpu(entry->name);
                     if (!cpu) continue;
                     unsigned pc = feature_popcount(&cpu->features);
@@ -464,6 +493,10 @@ const std::string &get_host_cpu_name() {
         }
     }
 
+    tp_vec_free(&impl_all);
+    tp_vec_free(&part_all);
+    tp_vec_free(&cores);
+
     if (!find_cpu(name))
         name = "generic";
 
@@ -471,39 +504,45 @@ const std::string &get_host_cpu_name() {
     return cpu_name;
 }
 
-FeatureBits get_host_features() {
-    FeatureBits features{};
+FeatureBits tp_get_host_features(void) {
+    FeatureBits features;
+    memset(&features, 0, sizeof(features));
 
     // Start with the features from the CPU table lookup.
-    // This gives us the full LLVM feature set for the detected CPU.
-    const auto &cpu = get_host_cpu_name();
-    const CPUEntry *entry = find_cpu(cpu.c_str());
+    const char *cpu = tp_get_host_cpu_name();
+    const CPUEntry *entry = find_cpu(cpu);
     if (entry)
         features = entry->features;
 
     // Layer on additional features detected from /proc/cpuinfo.
-    // This catches features the kernel reports that might not be in
-    // the CPU table (e.g. newer kernel, different silicon revision).
-    const auto &info = load_cpuinfo();
-    auto feat_line = cpuinfo_field(info, "Features");
-    if (!feat_line.empty()) {
-        bool has_aes = false, has_pmull = false, has_sha1 = false, has_sha2 = false;
+    size_t info_len;
+    const char *info_data = load_cpuinfo(&info_len);
+    tp_sv info;
+    info.data = info_data;
+    info.len = info_len;
+    tp_sv feat_line = cpuinfo_field(info, "Features");
+    if (feat_line.len > 0) {
+        int has_aes = 0, has_pmull = 0, has_sha1 = 0, has_sha2 = 0;
 
-        auto tokens = split(feat_line, ' ');
-        for (auto tok : tokens) {
-            if (tok == "aes") has_aes = true;
-            else if (tok == "pmull") has_pmull = true;
-            else if (tok == "sha1") has_sha1 = true;
-            else if (tok == "sha2") has_sha2 = true;
+        tp_vec tokens = tp_split(feat_line, ' ');
+        size_t ti;
+        for (ti = 0; ti < tokens.count; ti++) {
+            tp_sv tok = *(tp_sv *)tp_vec_at(&tokens, ti);
+            if (tp_sv_eq(tok, "aes")) has_aes = 1;
+            else if (tp_sv_eq(tok, "pmull")) has_pmull = 1;
+            else if (tp_sv_eq(tok, "sha1")) has_sha1 = 1;
+            else if (tp_sv_eq(tok, "sha2")) has_sha2 = 1;
 
-            for (const FeatureMap *m = aarch64_feature_map; m->linux_name; m++) {
-                if (tok == m->linux_name) {
+            const FeatureMap *m;
+            for (m = aarch64_feature_map; m->linux_name; m++) {
+                if (tp_sv_eq(tok, m->linux_name)) {
                     const FeatureEntry *fe = find_feature(m->llvm_name);
                     if (fe) feature_set(&features, fe->bit);
                     break;
                 }
             }
         }
+        tp_vec_free(&tokens);
 
         if (has_aes && has_pmull) {
             const FeatureEntry *fe = find_feature("aes");
@@ -519,7 +558,5 @@ FeatureBits get_host_features() {
     expand_implied(&features);
     return features;
 }
-
-} // namespace tp
 
 #endif // platform

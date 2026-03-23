@@ -10,10 +10,8 @@
 #   make -f Makefile.generate
 #   # then commit the updated generated/ files
 
-CXX ?= g++
 CC ?= gcc
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
-CFLAGS ?= -O2 -Wall -Wextra
+CFLAGS ?= -std=c11 -D_DEFAULT_SOURCE -O2 -Wall -Wextra
 
 # Directories
 SRCDIR = src
@@ -37,13 +35,13 @@ ifeq ($(ARCH),i386)
 endif
 
 ifeq ($(ARCH),x86_64)
-  HOST_SRC = $(SRCDIR)/host_x86.cpp
+  HOST_SRC = $(SRCDIR)/host_x86.c
   HOST_TABLE = $(GENDIR)/target_tables_x86_64.h
 else ifeq ($(ARCH),aarch64)
-  HOST_SRC = $(SRCDIR)/host_aarch64.cpp
+  HOST_SRC = $(SRCDIR)/host_aarch64.c
   HOST_TABLE = $(GENDIR)/target_tables_aarch64.h
 else ifeq ($(ARCH),riscv64)
-  HOST_SRC = $(SRCDIR)/host_riscv.cpp
+  HOST_SRC = $(SRCDIR)/host_riscv.c
   HOST_TABLE = $(GENDIR)/target_tables_riscv64.h
 else
   $(error Unsupported architecture: $(ARCH). Supported: x86_64, aarch64, riscv64)
@@ -55,13 +53,13 @@ ALL_TABLES = $(GENDIR)/target_tables_x86_64.h \
              $(GENDIR)/target_tables_riscv64.h
 
 # Source files: host-specific + target parsing + cross-arch tables (all arches)
-CROSS_SRCS = $(SRCDIR)/tables_x86_64.cpp \
-             $(SRCDIR)/tables_aarch64.cpp \
-             $(SRCDIR)/tables_riscv64.cpp \
-             $(SRCDIR)/cross_arch.cpp
+CROSS_SRCS = $(SRCDIR)/tables_x86_64.c \
+             $(SRCDIR)/tables_aarch64.c \
+             $(SRCDIR)/tables_riscv64.c \
+             $(SRCDIR)/cross_arch.c
 
-LIB_SRCS = $(SRCDIR)/target_parsing.cpp $(HOST_SRC) $(CROSS_SRCS)
-LIB_OBJS = $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS))
+LIB_SRCS = $(SRCDIR)/target_parsing.c $(HOST_SRC) $(CROSS_SRCS)
+LIB_OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 
 STATIC_LIB = $(BUILDDIR)/libtarget_parsing.a
 
@@ -76,24 +74,24 @@ lib: $(STATIC_LIB)
 # ============================================================================
 
 # Host-specific files depend on the host table
-$(BUILDDIR)/target_parsing.o: $(SRCDIR)/target_parsing.cpp $(HOST_TABLE) $(INCDIR)/target_parsing.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/target_parsing.o: $(SRCDIR)/target_parsing.c $(HOST_TABLE) $(INCDIR)/target_parsing.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
-$(BUILDDIR)/host_%.o: $(SRCDIR)/host_%.cpp $(HOST_TABLE) $(INCDIR)/target_parsing.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/host_%.o: $(SRCDIR)/host_%.c $(HOST_TABLE) $(INCDIR)/target_parsing.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
 # Per-arch table files each depend on their own generated header
-$(BUILDDIR)/tables_x86_64.o: $(SRCDIR)/tables_x86_64.cpp $(GENDIR)/target_tables_x86_64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/tables_x86_64.o: $(SRCDIR)/tables_x86_64.c $(GENDIR)/target_tables_x86_64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
-$(BUILDDIR)/tables_aarch64.o: $(SRCDIR)/tables_aarch64.cpp $(GENDIR)/target_tables_aarch64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/tables_aarch64.o: $(SRCDIR)/tables_aarch64.c $(GENDIR)/target_tables_aarch64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
-$(BUILDDIR)/tables_riscv64.o: $(SRCDIR)/tables_riscv64.cpp $(GENDIR)/target_tables_riscv64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/tables_riscv64.o: $(SRCDIR)/tables_riscv64.c $(GENDIR)/target_tables_riscv64.h $(INCDIR)/cross_arch.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
-$(BUILDDIR)/cross_arch.o: $(SRCDIR)/cross_arch.cpp $(INCDIR)/cross_arch.h | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
+$(BUILDDIR)/cross_arch.o: $(SRCDIR)/cross_arch.c $(INCDIR)/cross_arch.h | $(BUILDDIR)
+	$(CC) $(CFLAGS) -I$(INCDIR) -I$(GENDIR) -c -o $@ $<
 
 $(STATIC_LIB): $(LIB_OBJS)
 	ar rcs $@ $^
@@ -102,8 +100,8 @@ $(STATIC_LIB): $(LIB_OBJS)
 # Tests (NO LLVM dependency)
 # ============================================================================
 
-$(BUILDDIR)/test_standalone: test_standalone.cpp $(STATIC_LIB) $(HOST_TABLE) $(INCDIR)/cross_arch.h
-	$(CXX) $(CXXFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -o $@ $< -L$(BUILDDIR) -ltarget_parsing
+$(BUILDDIR)/test_standalone: test_standalone.c $(STATIC_LIB) $(HOST_TABLE) $(INCDIR)/cross_arch.h
+	$(CC) $(CFLAGS) -Wno-unused-function -I$(INCDIR) -I$(GENDIR) -o $@ $< -L$(BUILDDIR) -ltarget_parsing
 
 test: $(BUILDDIR)/test_standalone
 	$(BUILDDIR)/test_standalone

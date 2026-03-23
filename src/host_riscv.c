@@ -5,11 +5,11 @@
 #include "target_tables_riscv64.h"
 #include "target_parsing.h"
 
-#include <cstring>
-#include <cstdlib>
+#include <string.h>
+#include <stdlib.h>
 
 #ifdef __linux__
-#include <fstream>
+#include <stdio.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -103,7 +103,7 @@ static const char *detect_riscv_cpu_from_hwprobe(void) {
         {RISCV_HWPROBE_KEY_MIMPID, 0}
     };
     if (do_hwprobe(query, 3) != 0)
-        return nullptr;
+        return NULL;
 
     unsigned long long vendor = query[0].value;
     unsigned long long arch = query[1].value;
@@ -124,31 +124,28 @@ static const char *detect_riscv_cpu_from_hwprobe(void) {
     if (vendor == 0x710)
         return "spacemit-x60";
 
-    return nullptr;
+    return NULL;
 }
 
 static const char *detect_riscv_cpu_from_cpuinfo(void) {
-    std::ifstream f("/proc/cpuinfo");
-    if (!f) return nullptr;
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return NULL;
 
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.compare(0, 5, "uarch") != 0) continue;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "uarch", 5) != 0) continue;
 
-        auto colon = line.find(':');
-        if (colon == std::string::npos) continue;
+        char *colon = strchr(line, ':');
+        if (!colon) continue;
 
-        auto val = line.substr(colon + 1);
-        auto start = val.find_first_not_of(" \t");
-        if (start == std::string::npos) continue;
-        val = val.substr(start);
+        char *val = colon + 1;
+        while (*val == ' ' || *val == '\t') val++;
 
-        if (val.find("sifive,u74") != std::string::npos)
-            return "sifive-u74";
-        if (val.find("sifive,bullet") != std::string::npos)
-            return "sifive-u74";
+        if (strstr(val, "sifive,u74")) { fclose(f); return "sifive-u74"; }
+        if (strstr(val, "sifive,bullet")) { fclose(f); return "sifive-u74"; }
     }
-    return nullptr;
+    fclose(f);
+    return NULL;
 }
 #endif
 
@@ -157,13 +154,11 @@ static void set_feature(FeatureBits *features, const char *name) {
     if (fe) feature_set(features, fe->bit);
 }
 
-namespace tp {
+const char *tp_get_host_cpu_name(void) {
+    static const char *cpu_name = NULL;
+    if (cpu_name) return cpu_name;
 
-const std::string &get_host_cpu_name() {
-    static std::string cpu_name;
-    if (!cpu_name.empty()) return cpu_name;
-
-    const char *name = nullptr;
+    const char *name = NULL;
 
 #ifdef __linux__
     name = detect_riscv_cpu_from_hwprobe();
@@ -178,8 +173,9 @@ const std::string &get_host_cpu_name() {
     return cpu_name;
 }
 
-FeatureBits get_host_features() {
-    FeatureBits features{};
+FeatureBits tp_get_host_features(void) {
+    FeatureBits features;
+    memset(&features, 0, sizeof(features));
 
 #ifdef __linux__
     struct riscv_hwprobe query[] = {
@@ -269,5 +265,3 @@ FeatureBits get_host_features() {
     expand_implied(&features);
     return features;
 }
-
-} // namespace tp
